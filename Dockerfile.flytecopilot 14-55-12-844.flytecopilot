@@ -1,0 +1,44 @@
+# Builds a standalone flytecopilot image for the v2 monorepo.
+# The raw-container plugin runs this as the input downloader / output uploader
+# sidecar and invokes the binary at /bin/flyte-copilot
+# (see flyteplugins/go/tasks/pluginmachinery/flytek8s/copilot.go).
+
+FROM --platform=${BUILDPLATFORM} golang:1.26.3-bookworm AS flytebuilder
+
+ARG TARGETARCH
+ENV GOARCH="${TARGETARCH}"
+ENV GOOS=linux
+ENV CGO_ENABLED=0
+
+WORKDIR /flyteorg/build
+
+COPY dataproxy dataproxy
+COPY executor executor
+COPY flytecopilot flytecopilot
+COPY flyteidl2 flyteidl2
+COPY flyteplugins flyteplugins
+COPY flytestdlib flytestdlib
+COPY gen/go gen/go
+COPY actions actions
+COPY app app
+COPY events events
+COPY runs runs
+COPY cache_service cache_service
+COPY secret secret
+COPY manager manager
+
+COPY go.mod go.sum ./
+RUN go mod download
+RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/root/go/pkg/mod \
+    go build -v -o dist/flyte-copilot ./flytecopilot
+
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install --no-install-recommends --yes \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=flytebuilder /flyteorg/build/dist/flyte-copilot /bin/flyte-copilot
+
+CMD [ "/bin/flyte-copilot" ]

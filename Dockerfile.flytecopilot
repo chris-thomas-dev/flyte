@@ -1,0 +1,57 @@
+# Builds the v2 (flyteidl2) flytecopilot binary into a standalone image.
+#
+# CoPilot runs as the init/sidecar container in task pods. flyteplugins launches
+# it via /bin/flyte-copilot (see flyteplugins/.../flytek8s/copilot.go), so the
+# binary must live at that exact path.
+#
+# This mirrors the root Dockerfile's build context; it only changes the build
+# target to ./flytecopilot and the output binary.
+
+FROM --platform=${BUILDPLATFORM} golang:1.26.3-bookworm AS flytebuilder
+
+ARG TARGETARCH
+ENV GOARCH="${TARGETARCH}"
+ENV GOOS=linux
+ENV CGO_ENABLED=0
+
+WORKDIR /flyteorg/build
+
+COPY dataproxy dataproxy
+COPY executor executor
+COPY flytecopilot flytecopilot
+COPY flyteidl2 flyteidl2
+COPY flyteplugins flyteplugins
+COPY flytestdlib flytestdlib
+COPY gen/go gen/go
+COPY actions actions
+COPY app app
+COPY events events
+COPY runs runs
+COPY cache_service cache_service
+COPY secret secret
+
+COPY go.mod go.sum ./
+RUN go mod download
+COPY manager manager
+RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/root/go/pkg/mod \
+    go build -v -o dist/flyte-copilot ./flytecopilot
+
+
+FROM debian:bookworm-slim
+
+ARG FLYTE_VERSION
+ENV FLYTE_VERSION="${FLYTE_VERSION}"
+
+ENV DEBCONF_NONINTERACTIVE_SEEN=true
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ca-certificates is required for TLS to the blob/object store.
+RUN apt-get update && apt-get install --no-install-recommends --yes \
+        ca-certificates \
+        tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# flyteplugins invokes the copilot via /bin/flyte-copilot.
+COPY --from=flytebuilder /flyteorg/build/dist/flyte-copilot /bin/flyte-copilot
+
+ENTRYPOINT [ "/usr/bin/tini", "-g", "--", "/bin/flyte-copilot" ]
